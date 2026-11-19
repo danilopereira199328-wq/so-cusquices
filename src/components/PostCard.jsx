@@ -15,8 +15,11 @@ export default function PostCard({
   post,
   onLike,
   onDelete,
+  onBookmark,
+  onRepost,
+  isBookmarked = false,
   showAuthor = true,
-  children, // Aqui entra o CommentsSection
+  children,
 }) {
   const { user } = useAuth();
   const { toggleFollow, isFollowing } = useFollow();
@@ -27,8 +30,20 @@ export default function PostCard({
   const authorFollowed = isFollowing(post.authorId);
   const isOwner = user?.uid === post.authorId;
 
+  const handleConfirmDelete = () => {
+    if (window.confirm('Tens a certeza que queres apagar esta cusquice?')) {
+      onDelete(post);
+    }
+  };
+
   return (
     <div className="bg-gray-900 p-4 rounded-xl border border-gray-800 hover:border-gray-700 transition">
+      {post.repostedBy && (
+        <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">
+          🔁 Partilhado por <span className="font-semibold text-gray-400">{post.repostedBy}</span>
+        </p>
+      )}
+
       <div className="flex items-start gap-3">
         {showAuthor && (
           <Link to={`/profile/${post.authorId}`}>
@@ -76,7 +91,7 @@ export default function PostCard({
 
             {isOwner && onDelete && (
               <button
-                onClick={() => onDelete(post.id)}
+                onClick={handleConfirmDelete}
                 className="text-gray-500 hover:text-red-500 text-sm transition"
                 title="Apagar publicação"
               >
@@ -97,23 +112,49 @@ export default function PostCard({
             </div>
           )}
 
-          <div className="mt-3 flex items-center gap-5">
-            <button
-              onClick={() => onLike(post.id, post.likes)}
-              className={`flex items-center gap-1 text-sm transition ${
-                hasLiked ? 'text-red-500' : 'text-gray-500 hover:text-red-400'
-              }`}
-            >
-              {hasLiked ? '❤️' : '🤍'} {post.likes?.length || 0}
-            </button>
+          <div className="mt-3 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-5">
+              <button
+                onClick={() => onLike(post.id, post.likes)}
+                className={`flex items-center gap-1 text-sm transition ${
+                  hasLiked ? 'text-red-500' : 'text-gray-500 hover:text-red-400'
+                }`}
+              >
+                {hasLiked ? '❤️' : '🤍'} {post.likes?.length || 0}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setShowComments((prev) => !prev)}
-              className="flex items-center gap-1 text-sm text-gray-500 hover:text-blue-400 transition"
-            >
-              💬 {showComments ? 'Ocultar comentários' : 'Comentários'}
-            </button>
+              <button
+                type="button"
+                onClick={() => setShowComments((prev) => !prev)}
+                className="flex items-center gap-1 text-sm text-gray-500 hover:text-blue-400 transition"
+              >
+                💬 {showComments ? 'Ocultar' : 'Comentar'}
+              </button>
+
+              {onRepost && !isOwner && (
+                <button
+                  type="button"
+                  onClick={() => onRepost(post)}
+                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-green-400 transition"
+                  title="Partilhar no teu feed"
+                >
+                  🔁 Partilhar
+                </button>
+              )}
+            </div>
+
+            {onBookmark && (
+              <button
+                type="button"
+                onClick={() => onBookmark(post.id)}
+                className={`text-sm transition ${
+                  isBookmarked ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-300'
+                }`}
+                title={isBookmarked ? 'Remover dos guardados' : 'Guardar cusquice'}
+              >
+                {isBookmarked ? '🔖 Guardado' : '📑 Guardar'}
+              </button>
+            )}
           </div>
 
           {showComments && children}

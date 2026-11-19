@@ -12,11 +12,12 @@ import {
   serverTimestamp,
   deleteDoc,
   doc,
+  setDoc,
   updateDoc,
   arrayUnion,
   arrayRemove,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import PostCard from '../components/PostCard';
 import CommentsSection from '../components/CommentsSection';
 
@@ -29,30 +30,34 @@ export const CATEGORIES = [
 ];
 
 const MAX_FILE_SIZE_MB = 5;
+const MAX_CHARS = 300;
 
 export default function Feed() {
   const { user, logout } = useAuth();
   const { following } = useFollow();
 
   const [posts, setPosts] = useState([]);
+  const [bookmarks, setBookmarks] = useState([]);
   const [newPost, setNewPost] = useState('');
   const [country, setCountry] = useState('PT');
   const [category, setCategory] = useState('nacional');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // Estados de upload de imagem
+  // Upload de imagem
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
   const [uploadError, setUploadError] = useState('');
   const fileInputRef = useRef(null);
 
-  // Estados dos filtros
-  const [feedTab, setFeedTab] = useState('all');
+  // Filtros e ordenação
+  const [feedTab, setFeedTab] = useState('all'); // 'all' | 'following' | 'saved'
   const [filterCountry, setFilterCountry] = useState('ALL');
   const [filterCategory, setFilterCategory] = useState('ALL');
+  const [sortBy, setSortBy] = useState('recent'); // 'recent' | 'popular'
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Ouvir posts
   useEffect(() => {
     const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -66,13 +71,43 @@ export default function Feed() {
     return () => unsubscribe();
   }, []);
 
+  // Ouvir guardados do utilizador
+  useEffect(() => {
+    if (!user) return;
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userDocRef, (snap) => {
+      if (snap.exists()) {
+        setBookmarks(snap.data().bookmarks || []);
+      } else {
+        setBookmarks([]);
+      }
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  const hasActiveFilters =
+    feedTab !== 'all' ||
+    filterCountry !== 'ALL' ||
+    filterCategory !== 'ALL' ||
+    searchTerm.trim() !== '';
+
+  const clearFilters = () => {
+    setFeedTab('all');
+    setFilterCountry('ALL');
+    setFilterCategory('ALL');
+    setSearchTerm('');
+  };
+
   const filteredPosts = useMemo(() => {
-    return posts.filter((post) => {
+    const result = posts.filter((post) => {
       if (
         feedTab === 'following' &&
         !following.includes(post.authorId) &&
         post.authorId !== user.uid
       ) {
+        return false;
+      }
+      if (feedTab === 'saved' && !bookmarks.includes(post.id)) {
         return false;
       }
       if (filterCountry !== 'ALL' && post.country !== filterCountry) {
@@ -89,19 +124,35 @@ export default function Feed() {
       }
       return true;
     });
-  }, [posts, feedTab, following, user.uid, filterCountry, filterCategory, searchTerm]);
+
+    if (sortBy === 'popular') {
+      return [...result].sort(
+        (a, b) => (b.likes?.length || 0) - (a.likes?.length || 0)
+      );
+    }
+
+    return result;
+  }, [
+    posts,
+    feedTab,
+    following,
+    bookmarks,
+    user.uid,
+    filterCountry,
+    filterCategory,
+    searchTerm,
+    sortBy,
+  ]);
 
   const handleImageChange = (e) => {
     const file = e.target.files?.[0];
     setUploadError('');
-
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
       setUploadError('Seleciona apenas um ficheiro de imagem válido.');
       return;
     }
-
     if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
       setUploadError(`A imagem não pode exceder ${MAX_FILE_SIZE_MB} MB.`);
       return;
@@ -112,15 +163,11 @@ export default function Feed() {
   };
 
   const clearSelectedImage = () => {
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
-    }
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
     setImageFile(null);
     setImagePreview('');
     setUploadError('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleCreatePost = async (e) => {
@@ -132,10 +179,12 @@ export default function Feed() {
 
     try {
       let imageUrl = null;
+      let storagePath = null;
 
       if (imageFile) {
         const safeName = imageFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const storageRef = ref(storage, `posts/${user.uid}/${Date.now()}_${safeName}`);
+        storagePath = `posts/${user.uid}/${Date.now()}_${safeName}`;
+        const storageRef = ref(storage, storagePath);
         await uploadBytes(storageRef, imageFile);
         imageUrl = await getDownloadURL(storageRef);
       }
@@ -143,6 +192,7 @@ export default function Feed() {
       await addDoc(collection(db, 'posts'), {
         text: newPost.trim(),
         imageUrl,
+        storagePath,
         author: user.displayName,
         authorPhoto: user.photoURL,
         authorId: user.uid,
@@ -162,9 +212,12 @@ export default function Feed() {
     }
   };
 
-  const handleDeletePost = async (postId) => {
+  const handleDeletePost = async (post) => {
     try {
-      await deleteDoc(doc(db, 'posts', postId));
+      await deleteDoc(doc(db, 'posts', post.id));
+      if (post.storagePath) {
+        await deleteObject(ref(storage, post.storagePath)).catch(() => {});
+      }
     } catch (error) {
       console.error('Erro ao apagar post:', error);
     }
@@ -183,6 +236,49 @@ export default function Feed() {
       console.error('Erro ao dar like:', error);
     }
   };
+
+  const handleBookmark = async (postId) => {
+    if (!user) return;
+    const userRef = doc(db, 'users', user.uid);
+    const alreadySaved = bookmarks.includes(postId);
+
+    try {
+      await setDoc(
+        userRef,
+        {
+          bookmarks: alreadySaved ? arrayRemove(postId) : arrayUnion(postId),
+        },
+        { merge: true }
+      );
+    } catch (error) {
+      console.error('Erro ao guardar post:', error);
+    }
+  };
+
+  const handleRepost = async (post) => {
+    if (!user) return;
+    if (!window.confirm(`Partilhar esta cusquice de ${post.author} no teu feed?`)) return;
+
+    try {
+      await addDoc(collection(db, 'posts'), {
+        text: post.text,
+        imageUrl: post.imageUrl || null,
+        author: post.author,
+        authorPhoto: post.authorPhoto,
+        authorId: post.authorId,
+        repostedBy: user.displayName,
+        repostedById: user.uid,
+        country: post.country,
+        category: post.category,
+        likes: [],
+        createdAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error('Erro ao partilhar post:', error);
+    }
+  };
+
+  const remainingChars = MAX_CHARS - newPost.length;
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -213,7 +309,7 @@ export default function Feed() {
         >
           <textarea
             value={newPost}
-            onChange={(e) => setNewPost(e.target.value)}
+            onChange={(e) => setNewPost(e.target.value.slice(0, MAX_CHARS))}
             placeholder={
               country === 'PT' ? 'O que está a cusquizar?' : 'O que está a fofocar?'
             }
@@ -239,9 +335,7 @@ export default function Feed() {
             </div>
           )}
 
-          {uploadError && (
-            <p className="text-red-400 text-xs mb-2">{uploadError}</p>
-          )}
+          {uploadError && <p className="text-red-400 text-xs mb-2">{uploadError}</p>}
 
           <div className="flex flex-wrap gap-4 justify-between items-center">
             <div className="flex flex-wrap items-center gap-2">
@@ -296,24 +390,34 @@ export default function Feed() {
               </label>
             </div>
 
-            <button
-              type="submit"
-              disabled={(!newPost.trim() && !imageFile) || submitting}
-              className="bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded-full transition"
-            >
-              {submitting
-                ? 'A publicar...'
-                : country === 'PT'
-                ? 'Cusquizar'
-                : 'Fofocar'}
-            </button>
+            <div className="flex items-center gap-3">
+              <span
+                className={`text-xs ${
+                  remainingChars < 30 ? 'text-yellow-400 font-bold' : 'text-gray-500'
+                }`}
+              >
+                {remainingChars}
+              </span>
+
+              <button
+                type="submit"
+                disabled={(!newPost.trim() && !imageFile) || submitting}
+                className="bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded-full transition"
+              >
+                {submitting
+                  ? 'A publicar...'
+                  : country === 'PT'
+                  ? 'Cusquizar'
+                  : 'Fofocar'}
+              </button>
+            </div>
           </div>
         </form>
 
-        {/* Barra de Filtros */}
+        {/* Barra de Filtros e Ordenação */}
         <div className="mb-6 space-y-3 bg-gray-900/60 p-3 rounded-xl border border-gray-800">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => setFeedTab('all')}
                 className={`px-3 py-1 rounded-full text-sm font-medium transition ${
@@ -334,9 +438,19 @@ export default function Feed() {
               >
                 A Seguir ({following.length})
               </button>
+              <button
+                onClick={() => setFeedTab('saved')}
+                className={`px-3 py-1 rounded-full text-sm font-medium transition ${
+                  feedTab === 'saved'
+                    ? 'bg-yellow-500/20 text-yellow-300 ring-1 ring-yellow-500/50'
+                    : 'bg-gray-800 text-gray-400 hover:text-white'
+                }`}
+              >
+                🔖 Guardados ({bookmarks.length})
+              </button>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {['ALL', 'PT', 'BR'].map((c) => (
                 <button
                   key={c}
@@ -373,16 +487,44 @@ export default function Feed() {
                 </option>
               ))}
             </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="bg-gray-800 text-white text-sm rounded-lg px-3 py-1.5 outline-none border border-gray-700"
+            >
+              <option value="recent">🕒 Mais recentes</option>
+              <option value="popular">🔥 Mais gostados</option>
+            </select>
           </div>
+
+          {hasActiveFilters && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="text-xs text-blue-400 hover:underline"
+              >
+                Limpar filtros ativos
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Lista de Posts */}
         {loading ? (
           <p className="text-center text-gray-500">A carregar...</p>
         ) : filteredPosts.length === 0 ? (
-          <p className="text-center text-gray-500">
-            Nenhuma cusquice encontrada com estes filtros.
-          </p>
+          <div className="text-center text-gray-500 py-8 space-y-2">
+            <p>Nenhuma cusquice encontrada com estes filtros.</p>
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                className="text-sm text-blue-400 hover:underline"
+              >
+                Mostrar todas as publicações
+              </button>
+            )}
+          </div>
         ) : (
           <div className="space-y-4">
             {filteredPosts.map((post) => (
@@ -391,6 +533,9 @@ export default function Feed() {
                 post={post}
                 onLike={handleLike}
                 onDelete={handleDeletePost}
+                onBookmark={handleBookmark}
+                onRepost={handleRepost}
+                isBookmarked={bookmarks.includes(post.id)}
               >
                 <CommentsSection postId={post.id} />
               </PostCard>
