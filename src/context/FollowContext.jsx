@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { db } from '../firebase';
-import { doc, onSnapshot, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
 
 const FollowContext = createContext();
@@ -10,38 +10,32 @@ export function FollowProvider({ children }) {
   const [following, setFollowing] = useState([]);
 
   useEffect(() => {
-    if (!user) {
-      setFollowing([]);
-      return;
-    }
-    const docRef = doc(db, 'follows', user.uid);
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+    if (!user) return;
+    const fetchFollowing = async () => {
+      const docRef = doc(db, 'follows', user.uid);
+      const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
         setFollowing(docSnap.data().following || []);
-      } else {
-        setFollowing([]);
       }
-    });
-    return () => unsubscribe();
+    };
+    fetchFollowing();
   }, [user]);
 
   const toggleFollow = async (targetUid) => {
-    if (!user || user.uid === targetUid) return;
+    if (!user) return;
     const userRef = doc(db, 'follows', user.uid);
-    const currentlyFollowing = following.includes(targetUid);
+    const isFollowing = following.includes(targetUid);
 
     try {
-      await setDoc(
-        userRef,
-        {
-          following: currentlyFollowing
-            ? arrayRemove(targetUid)
-            : arrayUnion(targetUid),
-        },
-        { merge: true }
-      );
+      if (isFollowing) {
+        await updateDoc(userRef, { following: arrayRemove(targetUid) });
+        setFollowing(prev => prev.filter(id => id !== targetUid));
+      } else {
+        await setDoc(userRef, { following: arrayUnion(targetUid) }, { merge: true });
+        setFollowing(prev => [...prev, targetUid]);
+      }
     } catch (error) {
-      console.error('Erro ao atualizar follow:', error);
+      console.error("Erro ao seguir:", error);
     }
   };
 
