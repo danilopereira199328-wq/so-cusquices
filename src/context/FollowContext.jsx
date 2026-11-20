@@ -1,51 +1,116 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { doc, getDoc, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
+import { db } from '../firebase';
+import {
+  doc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+  increment,
+} from 'firebase/firestore';
 
 const FollowContext = createContext();
 
 export function FollowProvider({ children }) {
   const { user } = useAuth();
   const [following, setFollowing] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
-    const fetchFollowing = async () => {
-      const docRef = doc(db, 'follows', user.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setFollowing(docSnap.data().following || []);
+    if (!user) {
+      setFollowing([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const followDocRef = doc(db, 'follows', user.uid);
+
+    const unsubscribe = onSnapshot(
+      followDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          setFollowing(snap.data().following || []);
+        } else {
+          setFollowing([]);
+        }
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Erro ao ouvir follows:', error);
+        setLoading(false);
       }
-    };
-    fetchFollowing();
+    );
+
+    return () => unsubscribe();
   }, [user]);
 
-  const toggleFollow = async (targetUid) => {
-    if (!user) return;
-    const userRef = doc(db, 'follows', user.uid);
-    const isFollowing = following.includes(targetUid);
+  const toggleFollow = useCallback(
+    async (targetUserId) => {
+      if (!user || !targetUserId || user.uid === targetUserId) return;
 
-    try {
-      if (isFollowing) {
-        await updateDoc(userRef, { following: arrayRemove(targetUid) });
-        setFollowing(prev => prev.filter(id => id !== targetUid));
-      } else {
-        await setDoc(userRef, { following: arrayUnion(targetUid) }, { merge: true });
-        setFollowing(prev => [...prev, targetUid]);
+      const isCurrentlyFollowing = following.includes(targetUserId);
+      const followRef = doc(db, 'follows', user.uid);
+      const currentUserRef = doc(db, 'users', user.uid);
+      const targetUserRef = doc(db, 'users', targetUserId);
+      const delta = isCurrentlyFollowing ? -1 : 1;
+
+      try {
+        await setDoc(
+          followRef,
+          {
+            following: isCurrentlyFollowing
+              ? arrayRemove(targetUserId)
+              : arrayUnion(targetUserId),
+          },
+          { merge: true }
+        );
+
+        await setDoc(
+          currentUserRef,
+          {
+            displayName: user.displayName || 'Utilizador',
+            followingCount: increment(delta),
+          },
+          { merge: true }
+        );
+
+        await setDoc(
+          targetUserRef,
+          {
+            followersCount: increment(delta),
+          },
+          { merge: true }
+        );
+      } catch (error) {
+        console.error('Erro ao alternar follow:', error);
+        throw error;
       }
-    } catch (error) {
-      console.error("Erro ao seguir:", error);
-    }
-  };
+    },
+    [user, following]
+  );
 
-  const isFollowing = (targetUid) => following.includes(targetUid);
+  const isFollowing = useCallback(
+    (targetUserId) => following.includes(targetUserId),
+    [following]
+  );
 
   return (
-    <FollowContext.Provider value={{ following, toggleFollow, isFollowing }}>
+    <FollowContext.Provider
+      value={{
+        following,
+        loading,
+        toggleFollow,
+        isFollowing,
+      }}
+    >
       {children}
     </FollowContext.Provider>
   );
 }
 
-export const useFollow = () => useContext(FollowContext);
+export function useFollow() {
+  return useContext(FollowContext);
+}
